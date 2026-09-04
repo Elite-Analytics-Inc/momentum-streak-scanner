@@ -1,0 +1,41 @@
+{
+  "meta": {
+    "name": "momentum-streak-scanner",
+    "description": "S&P 500 stocks that have closed higher every session for at least N days in a row, ending on the latest close — ranked by streak length, then by the gain made during the streak. Broken streaks are ignored.",
+    "owner": "platform"
+  },
+  "lineage": {
+    "datasets": [
+      { "namespace": "markets", "table": "daily_prices", "mode": "read" },
+      { "namespace": "markets", "table": "sp500_constituents", "mode": "read" }
+    ]
+  },
+  "parameters": {
+    "min_streak_days": {
+      "type": "integer",
+      "description": "Only report a stock whose unbroken run of higher closes is at least this many sessions long.",
+      "placeholder": "3",
+      "required": true,
+      "default": 3,
+      "minimum": 2,
+      "maximum": 30
+    },
+    "lookback_days": {
+      "type": "integer",
+      "description": "How many calendar days of price history to consider, counted back from the latest close. It only needs to exceed the longest streak you expect to find; it also sets the length of the market-backdrop charts.",
+      "placeholder": "60",
+      "required": true,
+      "default": 60,
+      "minimum": 10,
+      "maximum": 365
+    }
+  },
+  "resources": {
+    "cpu_request": "500m",
+    "cpu_limit": "2",
+    "memory_request": "2Gi",
+    "memory_limit": "2Gi",
+    "timeout_minutes": 15,
+    "pool": "standard"
+  }
+}

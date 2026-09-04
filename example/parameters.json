@@ -1,0 +1,49 @@
+{
+  "meta": {
+    "name": "deposit-attrition",
+    "description": "Members whose deposit balances are draining, ranked by the money that has already left — the retention call list, plus where the losses cluster by segment and branch.",
+    "owner": "platform"
+  },
+  "lineage": {
+    "datasets": [
+      { "namespace": "banking", "table": "balance_snapshots", "mode": "read" },
+      { "namespace": "banking", "table": "members", "mode": "read" }
+    ]
+  },
+  "parameters": {
+    "lookback_months": {
+      "type": "integer",
+      "description": "Window over which to measure the balance decline.",
+      "placeholder": "6",
+      "required": true,
+      "default": 6,
+      "minimum": 2,
+      "maximum": 24
+    },
+    "decline_threshold_pct": {
+      "type": "number",
+      "description": "Flag a member when their deposit balance has fallen by this percentage or more over the window.",
+      "placeholder": "40",
+      "required": true,
+      "default": 40.0,
+      "minimum": 5.0,
+      "maximum": 95.0
+    },
+    "min_starting_balance": {
+      "type": "number",
+      "description": "Ignore members who started below this balance — percentage falls on tiny balances are noise that buries the real departures.",
+      "placeholder": "1000",
+      "required": true,
+      "default": 1000.0,
+      "minimum": 0.0
+    }
+  },
+  "resources": {
+    "cpu_request": "500m",
+    "cpu_limit": "2",
+    "memory_request": "2Gi",
+    "memory_limit": "2Gi",
+    "timeout_minutes": 15,
+    "pool": "standard"
+  }
+}
