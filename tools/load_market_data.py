@@ -91,6 +91,9 @@ def fetch_constituents() -> pd.DataFrame:
     # int, or `0000320193` silently becomes `320193`. `founded` has values like "1902 (1970)".
     roster["cik"] = roster["cik"].astype("string").str.zfill(10)
     roster["founded"] = roster["founded"].astype("string")
+    # Wikipedia's markup leaks into a few company names — "ResMed|" carries a stray table pipe.
+    # Left in, it shows up in the dashboard exactly as scraped, which reads as a broken cell.
+    roster["company"] = roster["company"].astype("string").str.strip().str.rstrip("|").str.strip()
     roster["date_added"] = pd.to_datetime(roster["date_added"], errors="coerce").dt.date
     log(f"  {len(roster)} constituents")
     return roster
