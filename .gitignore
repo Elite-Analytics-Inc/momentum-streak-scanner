@@ -19,3 +19,8 @@ data/
 # Browser-check leftovers and the preview log: never part of the analysis.
 .playwright-mcp/
 .preview.log
+
+# The worked examples ship with the starter kit and are what a draft is saved from.
+# They are not part of this analysis and do not belong in the repository.
+example/
+example-multipage/
