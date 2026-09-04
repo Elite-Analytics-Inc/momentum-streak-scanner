@@ -58,6 +58,27 @@ Decisions taken, and why:
 - **Symbols are sanitised for the feed but shown as the exchange writes them.** Wikipedia lists
   `BRK.B`; Yahoo wants `BRK-B`. The roster carries both; every output shows the exchange spelling.
 
+## The pick score (page 5)
+
+Four signs, each 0–100, computed for every stock on every session so the rule can be replayed:
+
+| Sign | Weight | Definition |
+| --- | --- | --- |
+| accel | 30 | the last session's rise, capped at 3% = 100 |
+| tide | 30 | share of the stock's sector that rose that session |
+| steady | 20 | share of the streak's gain not made in its single biggest day |
+| trend | 20 | the close as a share of the stock's highest close so far in the window |
+
+Score = 0.3·accel + 0.3·tide + 0.2·steady + 0.2·trend. Picks are the top N scores among streaking
+stocks on the scan date. The back-test keeps the top 20 for every past session with a next
+session, records whether each rose, and the page adds up the first N.
+
+**Decision, and the finding it rests on.** The score was designed by looking at the same weeks it
+is tested on, and forty sessions is a short test, so its hit rate is flattered and noisy. On the
+first run (data to 3 September 2026) the top-five picks rose the next session 40% of the time, all
+streaking stocks 45.7%, and the whole index 50.2% — the rule did *worse* than random. The page
+is built to show that honestly rather than to hide it: the back-test tiles sit beside the picks.
+
 ## Inputs
 
 | Dataset | Each row is | What it provides |
@@ -77,7 +98,7 @@ streak the analysis is expected to find (the loader pulls three months).
 
 ## The dashboard
 
-Four pages, so that every page fits its screen and every control sits beside what it drives.
+Five pages, so that every page fits its screen and every control sits beside what it drives.
 
 1. **Today's Streaks** (front page). Four headline tiles: the close the scan is as of, how many
    stocks are on a streak, the longest streak, and the best streak gain. Then the **leaderboard**
@@ -94,6 +115,13 @@ Four pages, so that every page fits its screen and every control sits beside wha
    stocks on a streak as of each session, side by side, so the reader can tell a market-wide lift
    from stock-specific momentum. Then a sector table with share, longest streak, and the sector's
    own breadth.
+5. **Next-Session Picks.** Every streaking stock scored out of 100 on four signs that its run
+   still had force at the close (below), the top N named as picks — N chosen from a dropdown of
+   5, 10, 15 or 20 — with a stacked bar of what each score is made of and a table giving the
+   reasons and warnings in words. Beside it, the **back-test**: the same rule replayed on every
+   earlier day in the window, its picks checked against the next session, and the hit rate shown
+   next to the whole index's rate for the same days. The page says plainly that if the picks are
+   not clearly above the index, the rule has no edge.
 
 Every page opens with a note on how to read it and a glossary of its terms; every tile, chart and
 table carries an ⓘ saying what it shows and how to judge it.
@@ -109,6 +137,9 @@ table carries an ⓘ saying what it shows and how to judge it.
 | `price_history` | one row per winner per session in the window | symbol, company, trade_date, close, day_pct, up_pct, down_pct, streak_days_as_of, in_active_streak, streak_close, base_close |
 | `streak_paths` | one row per winner per streak day, day 0 = base | symbol, company, streak_days, day_index, trade_date, close, indexed, pct_from_base |
 | `daily_breadth` | one row per session in the window | trade_date, stocks_priced, stocks_up, share_up_pct, on_streak, longest_streak |
+| `pick_scores` | one row per winner on the scan date, best score first | pick_rank, symbol, company, sector, streak_days, streak_gain_pct, latest_day_pct, score, accel_pts, tide_pts, steady_pts, trend_pts, sector_up_pct, biggest_day_pct, pct_of_high, recommended, why, warning |
+| `pick_backtest` | one row per pick (top 20) per past session with a next session | pick_date, next_date, pick_rank, symbol, streak_days, score, next_day_pct, rose_next_day, streak_hit_pct, market_hit_pct |
+| `pick_backtest_summary` | one row | days_tested, streak_hit_pct, streak_avg_next_pct, market_hit_pct, market_avg_next_pct, top_pick, top_score |
 
 ## Dependencies
 

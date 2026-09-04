@@ -114,6 +114,52 @@ STREAKS = f"""
                row_number() OVER (ORDER BY streak_days DESC, streak_gain_pct DESC, symbol) AS rank
         FROM today t
         WHERE streak_days >= {MIN_STREAK}
+    ),
+    -- ---- the pick score: four signs that a run still had force at the close -------------
+    -- Computed for every stock on every session (not just the latest), so the same rule can be
+    -- replayed on past days and its hit rate measured honestly. Each sign is 0-100:
+    --   accel  : the last day's move, 3% or more scores 100 — a run that is speeding up
+    --   tide   : share of the stock's sector that rose that day — the tide is with it
+    --   steady : share of the streak's gain NOT made in its single biggest day — a climb, not a jump
+    --   trend  : the close as a % of the stock's highest close so far in the window — near highs
+    -- The score is a weighted sum: 30 accel + 30 tide + 20 steady + 20 trend.
+    signs AS (
+        SELECT s.yahoo_symbol, s.trade_date, s.close, s.day_pct, s.streak_days, s.base_close,
+               ro.symbol, ro.company, ro.sector,
+               100.0 * (s.close / s.base_close - 1) AS gain_pct,
+               max(s.day_pct) OVER (PARTITION BY s.yahoo_symbol, s.run_id ORDER BY s.trade_date
+                                    ROWS UNBOUNDED PRECEDING) AS biggest_day_pct,
+               max(s.close) OVER (PARTITION BY s.yahoo_symbol ORDER BY s.trade_date
+                                  ROWS UNBOUNDED PRECEDING) AS high_so_far,
+               100.0 * avg(s.up) OVER (PARTITION BY ro.sector, s.trade_date) AS sector_up_pct
+        FROM streaked s
+        JOIN roster ro ON ro.yahoo_symbol = s.yahoo_symbol
+        WHERE s.prev_close IS NOT NULL
+    ),
+    scored AS (
+        SELECT *,
+               least(100, greatest(0, 100.0 * day_pct / 3.0)) AS accel,
+               sector_up_pct AS tide,
+               least(100, greatest(0, CASE WHEN gain_pct > 0
+                    THEN 100.0 * (1 - biggest_day_pct / gain_pct) ELSE 0 END)) AS steady,
+               least(100, greatest(0, 100.0 * close / high_so_far)) AS trend
+        FROM signs
+        WHERE streak_days >= {MIN_STREAK}
+    ),
+    candidates AS (
+        SELECT *,
+               0.3 * accel + 0.3 * tide + 0.2 * steady + 0.2 * trend AS score,
+               row_number() OVER (PARTITION BY trade_date
+                                  ORDER BY 0.3 * accel + 0.3 * tide + 0.2 * steady + 0.2 * trend DESC,
+                                           streak_days DESC, symbol) AS pick_rank
+        FROM scored
+    ),
+    -- what actually happened the session after: the back-test's answer key
+    next_day AS (
+        SELECT yahoo_symbol, trade_date,
+               lead(trade_date) OVER (PARTITION BY yahoo_symbol ORDER BY trade_date) AS next_date,
+               lead(day_pct) OVER (PARTITION BY yahoo_symbol ORDER BY trade_date) AS next_day_pct
+        FROM streaked
     )
 """
 
@@ -242,6 +288,106 @@ GROUP BY trade_date
 ORDER BY trade_date
 """
 
+#: Today's picks: every winner scored, best first, with the reasons and the warnings spelled out
+#: in words so the table explains itself. `pick_rank` 1-5 is the recommendation.
+PICK_SCORES = f"""
+WITH {STREAKS}
+SELECT c.pick_rank, c.symbol, c.company, c.sector, c.streak_days,
+       round(c.gain_pct, 2) AS streak_gain_pct,
+       round(c.day_pct, 2) AS latest_day_pct,
+       round(c.score, 1) AS score,
+       round(0.3 * c.accel, 1) AS accel_pts,
+       round(0.3 * c.tide, 1) AS tide_pts,
+       round(0.2 * c.steady, 1) AS steady_pts,
+       round(0.2 * c.trend, 1) AS trend_pts,
+       round(c.sector_up_pct, 1) AS sector_up_pct,
+       round(c.biggest_day_pct, 2) AS biggest_day_pct,
+       round(100.0 * c.close / c.high_so_far, 1) AS pct_of_high,
+       c.pick_rank <= 5 AS recommended,
+       concat_ws('; ',
+           CASE WHEN c.day_pct >= 2 THEN 'strong last day' END,
+           CASE WHEN c.tide >= 75 THEN 'sector tide with it' END,
+           CASE WHEN c.steady >= 60 THEN 'steady climb' END,
+           CASE WHEN c.trend >= 98 THEN 'at its high' END) AS why,
+       concat_ws('; ',
+           CASE WHEN c.day_pct < 0.5 THEN 'fading' END,
+           CASE WHEN c.tide < 35 THEN 'against its sector' END,
+           CASE WHEN c.steady < 40 THEN 'one-day jump' END,
+           CASE WHEN c.trend < 85 THEN 'bounce from a fall' END) AS warning
+FROM candidates c
+JOIN scan ON c.trade_date = scan.scan_date
+ORDER BY c.pick_rank
+"""
+
+#: The back-test, one row per pick per past session: apply the same rule as of that day, keep its
+#: top twenty, and record what each did the next session. The dashboard chooses how many of the
+#: twenty count as "the picks" (five, ten, fifteen, twenty) and adds them up itself. Two baselines
+#: ride on every row — the share of all streaking stocks that rose next day, and the share of the
+#: whole index — because the question is not "did the picks rise" but "did they rise more often
+#: than not picking".
+PICK_BACKTEST = f"""
+WITH {STREAKS},
+    picks AS (
+        SELECT c.trade_date, c.pick_rank, c.symbol, c.score, c.streak_days,
+               n.next_date, n.next_day_pct
+        FROM candidates c
+        JOIN next_day n ON n.yahoo_symbol = c.yahoo_symbol AND n.trade_date = c.trade_date
+        WHERE c.pick_rank <= 20 AND n.next_day_pct IS NOT NULL
+    ),
+    streak_base AS (
+        SELECT c.trade_date,
+               100.0 * count(*) FILTER (WHERE n.next_day_pct > 0) / count(*) AS streak_hit_pct
+        FROM candidates c
+        JOIN next_day n ON n.yahoo_symbol = c.yahoo_symbol AND n.trade_date = c.trade_date
+        WHERE n.next_day_pct IS NOT NULL
+        GROUP BY c.trade_date
+    ),
+    market_base AS (
+        SELECT trade_date,
+               100.0 * count(*) FILTER (WHERE next_day_pct > 0) / count(*) AS market_hit_pct
+        FROM next_day
+        WHERE next_day_pct IS NOT NULL
+        GROUP BY trade_date
+    )
+SELECT p.trade_date AS pick_date, p.next_date, p.pick_rank, p.symbol, p.streak_days,
+       round(p.score, 1) AS score,
+       round(p.next_day_pct, 2) AS next_day_pct,
+       p.next_day_pct > 0 AS rose_next_day,
+       round(sb.streak_hit_pct, 1) AS streak_hit_pct,
+       round(mb.market_hit_pct, 1) AS market_hit_pct
+FROM picks p
+JOIN streak_base sb ON sb.trade_date = p.trade_date
+JOIN market_base mb ON mb.trade_date = p.trade_date
+ORDER BY p.trade_date, p.pick_rank
+"""
+
+#: The back-test's baselines in one row: how often any streaking stock, and any index member,
+#: rose the next session over the same days — the bar the picks have to clear.
+PICK_BACKTEST_SUMMARY = f"""
+WITH {STREAKS},
+    streakers AS (
+        SELECT c.trade_date, n.next_day_pct
+        FROM candidates c
+        JOIN next_day n ON n.yahoo_symbol = c.yahoo_symbol AND n.trade_date = c.trade_date
+        WHERE n.next_day_pct IS NOT NULL
+    ),
+    market AS (
+        SELECT trade_date, next_day_pct FROM next_day WHERE next_day_pct IS NOT NULL
+    )
+SELECT
+    (SELECT count(DISTINCT trade_date) FROM streakers) AS days_tested,
+    (SELECT round(100.0 * count(*) FILTER (WHERE next_day_pct > 0) / greatest(1, count(*)), 1)
+     FROM streakers) AS streak_hit_pct,
+    (SELECT round(avg(next_day_pct), 2) FROM streakers) AS streak_avg_next_pct,
+    (SELECT round(100.0 * count(*) FILTER (WHERE next_day_pct > 0) / greatest(1, count(*)), 1)
+     FROM market) AS market_hit_pct,
+    (SELECT round(avg(next_day_pct), 2) FROM market) AS market_avg_next_pct,
+    (SELECT symbol FROM candidates c JOIN scan ON c.trade_date = scan.scan_date
+     WHERE pick_rank = 1) AS top_pick,
+    (SELECT round(score, 1) FROM candidates c JOIN scan ON c.trade_date = scan.scan_date
+     WHERE pick_rank = 1) AS top_score
+"""
+
 OUTPUTS = (
     ("scan_overview", SCAN_OVERVIEW, "the headline numbers"),
     ("active_streaks", ACTIVE_STREAKS, "the leaderboard"),
@@ -250,6 +396,9 @@ OUTPUTS = (
     ("price_history", PRICE_HISTORY, "the winners' recent prices"),
     ("streak_paths", STREAK_PATHS, "the streaks side by side"),
     ("daily_breadth", DAILY_BREADTH, "the market backdrop"),
+    ("pick_scores", PICK_SCORES, "today's picks, scored"),
+    ("pick_backtest", PICK_BACKTEST, "the pick rule replayed on past days"),
+    ("pick_backtest_summary", PICK_BACKTEST_SUMMARY, "the back-test's baselines"),
 )
 
 

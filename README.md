@@ -28,6 +28,11 @@ as of the newest close in the data.
   and the streak day by day.
 - **The Market Backdrop** — how much of the market rose each day and how many stocks were on a
   streak, so you can tell a market-wide lift from stock-specific momentum; plus a sector table.
+- **Next-Session Picks** — every streaking stock scored on four signs (a strong last day, its
+  sector rising with it, a steady climb rather than a one-day jump, and closing near its high),
+  the top 5, 10, 15 or 20 named as picks, and a back-test that replays the rule on past days and
+  shows its hit rate next to the whole index's. On the first run the picks did worse than random,
+  and the page shows that plainly.
 
 ## Data
 
