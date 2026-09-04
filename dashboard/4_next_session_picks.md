@@ -73,7 +73,7 @@ which flatters it, and because forty days is a short test.
 | **Streak** | An unbroken run of sessions where each close was higher than the one before, ending on the latest close. |
 {% /glossary %}
 
-{% button_group name="top_n" title="How many picks" options="5,10,15,20" default="5" /%}
+{% select name="top_n" title="How many picks" options="5,10,15,20" default="5" /%}
 
 {% big_value data="$summary" value="top_pick" title="Top Pick" fmt="raw" info="The highest-scoring streak at the latest close. The table below says why, and what to be wary of." /%}
 {% big_value data="$test" value="pick_hit_pct" title="Picks That Rose Next Day (Back-Test)" fmt="pct1" info="Over every past day in the window, the share of that day's picks that closed higher the next session. This is the number that says whether the rule works. Compare it with the next tile." /%}
