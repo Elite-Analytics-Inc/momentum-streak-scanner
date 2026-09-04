@@ -48,7 +48,7 @@ Decisions taken, and why:
 - **A streak that reaches the start of the window is flagged `capped`**: it is *at least* that
   long, and the window should be widened.
 - **The roster and the prices come from the live feeds, never a typed-in list.** On the laptop,
-  `tools/load_market_data.py` fetches the S&P 500 roster from Wikipedia and three months of daily
+  `tools/load_market_data.py` fetches the S&P 500 roster from Wikipedia and two years of daily
   prices from Yahoo Finance (via `yfinance`), and writes them as the two input tables. It is a
   loader, not part of the analysis: the same feeds will be loaded into the lake under the same
   names, and `main.py` runs unchanged against them.
@@ -79,6 +79,44 @@ first run (data to 3 September 2026) the top-five picks rose the next session 40
 streaking stocks 45.7%, and the whole index 50.2% — the rule did *worse* than random. The page
 is built to show that honestly rather than to hide it: the back-test tiles sit beside the picks.
 
+**Then it was used live on 4 September 2026 and failed.** All five hand-selected names fell; four
+of the score's five fell; only 10 of the 51 streaking stocks rose that day. That failure is what
+produced page 5 and the two changes below it.
+
+## What the evidence says (page 6, added 4 September 2026)
+
+Two changes followed the live failure, and both are structural:
+
+1. **The price history is now two years, not three months** (`PERIOD = "2y"` in the loader). Forty
+   sessions cannot separate an effect from noise; ~500 can. This is the single most important fix.
+2. **The evidence queries read the whole history, not `lookback_days`.** `HISTORY` in `main.py` is
+   a second derivation for exactly this: `STREAKS` trims to the window because "what is on a streak
+   today" should, and a rule's back-test must not. Mixing the two produced a first draft claiming a
+   +1.3% edge that vanished to +0.08% on the full sample.
+
+The findings, measured over ~500 sessions and split into halves:
+
+| Rule (buy 5 at the close, hold one session) | First half, excess | Held-out half, excess |
+| --- | --- | --- |
+| Buy the risers (up 3+, biggest streak gain) | −0.125% | −0.009% |
+| Buy the fallers (down 3+, biggest 5-day fall) | +0.076% | +0.117% |
+| Buy any index member (baseline) | 0 by definition | 0 by definition |
+
+*Excess* is the next-day return minus the equal-weighted index's move that day — the measure that
+separates stock selection from riding the market.
+
+- **The scanner's own premise is negative.** Stocks that rose 6–7 sessions running returned −0.05%
+  to −0.15% excess the next session. The longer the winning run, the worse the next day.
+- **Falling streaks bounce, mildly.** Down 4–6 sessions gives +0.03% to +0.06% excess; the traded
+  five-stock version gives about +0.10%, positive in both halves.
+- **It is not significant.** t = 1.23 on the daily excess series. Below ~2 that is luck's range.
+- **The one consistent effect is about the market, not a stock.** After the index falls more than
+  1%, the next session averaged +0.60% and rose 65% of the time (40 sessions).
+
+**The decision taken:** report all of this on its own page rather than quietly retune the score.
+Page 5 keeps the momentum picks, with a plain warning at the top pointing at page 6. A rule shown
+to fail, kept visible, is more useful to the analyst than one silently deleted.
+
 ## Inputs
 
 | Dataset | Each row is | What it provides |
@@ -87,7 +125,7 @@ is built to show that honestly rather than to hide it: the back-test tiles sit b
 | `markets.sp500_constituents` | one current index member | `symbol` (exchange spelling), `yahoo_symbol`, `company`, `sector`, `sub_industry`, `headquarters`, `date_added`, `cik` (10-digit string, leading zeros kept), `founded` |
 
 The price table must hold **closed sessions only** and at least as much history as the longest
-streak the analysis is expected to find (the loader pulls three months).
+streak the analysis is expected to find, plus enough sessions to back-test a rule honestly (the loader pulls two years — three months proved far too short).
 
 ## Parameters (what varies per run)
 
@@ -98,7 +136,7 @@ streak the analysis is expected to find (the loader pulls three months).
 
 ## The dashboard
 
-Five pages, so that every page fits its screen and every control sits beside what it drives.
+Six pages, so that every page fits its screen and every control sits beside what it drives.
 
 1. **Today's Streaks** (front page). Four headline tiles: the close the scan is as of, how many
    stocks are on a streak, the longest streak, and the best streak gain. Then the **leaderboard**
@@ -115,13 +153,18 @@ Five pages, so that every page fits its screen and every control sits beside wha
    stocks on a streak as of each session, side by side, so the reader can tell a market-wide lift
    from stock-specific momentum. Then a sector table with share, longest streak, and the sector's
    own breadth.
-5. **Next-Session Picks.** Every streaking stock scored out of 100 on four signs that its run
+5. **Next-Session Picks (kept, and shown to fail).** Every streaking stock scored out of 100 on four signs that its run
    still had force at the close (below), the top N named as picks — N chosen from a dropdown of
    5, 10, 15 or 20 — with a stacked bar of what each score is made of and a table giving the
    reasons and warnings in words. Beside it, the **back-test**: the same rule replayed on every
    earlier day in the window, its picks checked against the next session, and the hit rate shown
    next to the whole index's rate for the same days. The page says plainly that if the picks are
-   not clearly above the index, the rule has no edge.
+   not clearly above the index, the rule has no edge. It is not, and the page says so at the top.
+6. **What Actually Predicts.** The evidence page. Streak length against next-session excess return
+   in both directions (a dropdown switches between rising and falling runs), the two rules against
+   the buy-anything baseline split into first and held-out halves, what the index itself did after
+   a fall of each size, and — for a reader who will act regardless — the fallers the only validated
+   rule points at, with a dropdown for 5, 10 or 15 names and the guard rails stated in words.
 
 Every page opens with a note on how to read it and a glossary of its terms; every tile, chart and
 table carries an ⓘ saying what it shows and how to judge it.
@@ -140,6 +183,11 @@ table carries an ⓘ saying what it shows and how to judge it.
 | `pick_scores` | one row per winner on the scan date, best score first | pick_rank, symbol, company, sector, streak_days, streak_gain_pct, latest_day_pct, score, accel_pts, tide_pts, steady_pts, trend_pts, sector_up_pct, biggest_day_pct, pct_of_high, recommended, why, warning |
 | `pick_backtest` | one row per pick (top 20) per past session with a next session | pick_date, next_date, pick_rank, symbol, streak_days, score, next_day_pct, rose_next_day, streak_hit_pct, market_hit_pct |
 | `pick_backtest_summary` | one row | days_tested, streak_hit_pct, streak_avg_next_pct, market_hit_pct, market_avg_next_pct, top_pick, top_score |
+| `streak_evidence` | one row per direction per streak length | direction, streak_length, observations, rose_next_pct, avg_next_pct, avg_excess_pct |
+| `rule_comparison` | one row per rule per half of the history | rule, period, picks, rose_next_pct, avg_next_pct, avg_excess_pct |
+| `market_bounce` | one row per size-of-market-move band | market_day, sort_order, sessions, avg_next_pct, next_up_pct |
+| `bounce_picks` | one row per bounce candidate on the scan date (top 15) | bounce_rank, symbol, company, sector, down_days, latest_day_pct, five_day_pct, pct_of_20d_high, latest_close, market_today_pct, breadth_pct |
+| `bounce_summary` | one row | sessions_tested, bounce_avg_next_pct, bounce_avg_excess_pct, bounce_excess_held_out, t_statistic, market_today_pct, breadth_today_pct, top_bounce_symbol, candidates_today, after_mild_fall_pct |
 
 ## Dependencies
 

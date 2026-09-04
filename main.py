@@ -115,6 +115,64 @@ STREAKS = f"""
         FROM today t
         WHERE streak_days >= {MIN_STREAK}
     ),
+    -- ---- the other direction: how many sessions has each stock closed DOWN in a row? -----
+    -- Built the same way as the up-streak, on the same rows. It exists because the analysis
+    -- back-tests its own pick rule, and that test said the momentum rule loses: over two years
+    -- the stocks on the longest up-runs did *worse* than the market next session, in both halves
+    -- of the sample. The falling stocks were where the small edge was. An analysis that hides
+    -- that to protect its own headline is worthless, so both directions are computed and both
+    -- are shown.
+    dn_runs AS (
+        SELECT yahoo_symbol, trade_date, close, prev_close, day_pct,
+               CASE WHEN prev_close IS NOT NULL AND close < prev_close THEN 1 ELSE 0 END AS down,
+               sum(CASE WHEN prev_close IS NOT NULL AND close < prev_close THEN 0 ELSE 1 END)
+                   OVER (PARTITION BY yahoo_symbol ORDER BY trade_date ROWS UNBOUNDED PRECEDING)
+                   AS dn_run_id
+        FROM flagged
+    ),
+    dn_streaked AS (
+        SELECT *,
+               row_number() OVER (PARTITION BY yahoo_symbol, dn_run_id ORDER BY trade_date) - 1
+                   AS dn_streak
+        FROM dn_runs
+    ),
+    -- every stock, every session, with the two things the reversal rule reads: how many days it
+    -- has fallen in a row, and how far it has fallen over five sessions
+    reversal AS (
+        SELECT d.yahoo_symbol, d.trade_date, d.close, d.day_pct, d.dn_streak,
+               ro.symbol, ro.company, ro.sector,
+               100.0 * (d.close / nullif(lag(d.close, 5) OVER
+                   (PARTITION BY d.yahoo_symbol ORDER BY d.trade_date), 0) - 1) AS r5,
+               100.0 * (d.close / nullif(max(d.close) OVER
+                   (PARTITION BY d.yahoo_symbol ORDER BY d.trade_date ROWS 19 PRECEDING), 0))
+                   AS pct_of_hi20,
+               lead(d.day_pct) OVER (PARTITION BY d.yahoo_symbol ORDER BY d.trade_date) AS fwd1
+        FROM dn_streaked d
+        JOIN roster ro ON ro.yahoo_symbol = d.yahoo_symbol
+        WHERE d.prev_close IS NOT NULL
+    ),
+    -- the market's own move each session: the equal-weighted average of every member. Subtracting
+    -- it is what separates "this stock rose" from "everything rose" — the difference between
+    -- picking a stock and buying the index.
+    mkt AS (
+        SELECT trade_date,
+               avg(day_pct) AS mkt_today,
+               avg(fwd1) AS mkt_fwd1,
+               100.0 * avg(CASE WHEN day_pct > 0 THEN 1 ELSE 0 END) AS breadth_pct
+        FROM reversal
+        GROUP BY trade_date
+    ),
+    rev AS (
+        SELECT r.*, m.mkt_today, m.mkt_fwd1, m.breadth_pct,
+               r.fwd1 - m.mkt_fwd1 AS excess
+        FROM reversal r JOIN mkt m ON m.trade_date = r.trade_date
+    ),
+    -- the rule, applied on every session: among stocks down 3+ sessions, the five that have
+    -- fallen furthest over five days.
+    rev_ranked AS (
+        SELECT *, row_number() OVER (PARTITION BY trade_date ORDER BY r5) AS bounce_rank
+        FROM rev WHERE dn_streak >= 3 AND r5 IS NOT NULL
+    ),
     -- ---- the pick score: four signs that a run still had force at the close -------------
     -- Computed for every stock on every session (not just the latest), so the same rule can be
     -- replayed on past days and its hit rate measured honestly. Each sign is 0-100:
@@ -388,6 +446,210 @@ SELECT
      WHERE pick_rank = 1) AS top_score
 """
 
+#: ---------------------------------------------------------------------------------------------
+#: **The evidence block reads the WHOLE price history, not the analysis window.**
+#:
+#: This distinction cost a wrong answer once already. `STREAKS` deliberately trims to
+#: `lookback_days` — that is right for "what is on a streak today". It is *wrong* for judging a
+#: rule: sixty days is about forty sessions, and forty sessions of a five-stock rule is two
+#: hundred observations whose average is noise. The first version of the pick page was judged on
+#: exactly that and reported an edge that did not exist.
+#:
+#: So the evidence queries below build the same features over every session in the table, and the
+#: sample is split in half: a rule may be chosen on the first half, and the second half is the
+#: only honest report of how it does.
+HISTORY = f"""
+    roster AS (
+        SELECT symbol, yahoo_symbol, company, sector, sub_industry
+        FROM {CATALOG}.markets.sp500_constituents
+    ),
+    scan AS (
+        SELECT max(trade_date) AS scan_date FROM {CATALOG}.markets.daily_prices
+    ),
+    all_prices AS (
+        SELECT p.symbol AS yahoo_symbol, p.trade_date, p.adj_close AS close
+        FROM {CATALOG}.markets.daily_prices p
+        WHERE p.adj_close IS NOT NULL
+    ),
+    all_moves AS (
+        SELECT yahoo_symbol, trade_date, close,
+               lag(close) OVER w AS prev_close,
+               lag(close, 5) OVER w AS close_5_ago,
+               max(close) OVER (PARTITION BY yahoo_symbol ORDER BY trade_date ROWS 19 PRECEDING)
+                   AS hi20
+        FROM all_prices
+        WINDOW w AS (PARTITION BY yahoo_symbol ORDER BY trade_date)
+    ),
+    all_flagged AS (
+        SELECT *,
+               CASE WHEN prev_close IS NOT NULL AND close > prev_close THEN 1 ELSE 0 END AS up,
+               CASE WHEN prev_close IS NOT NULL AND close < prev_close THEN 1 ELSE 0 END AS down,
+               CASE WHEN prev_close IS NOT NULL AND prev_close > 0
+                    THEN 100.0 * (close / prev_close - 1) END AS day_pct
+        FROM all_moves
+    ),
+    all_runs AS (
+        SELECT *,
+               sum(1 - up) OVER (PARTITION BY yahoo_symbol ORDER BY trade_date
+                                 ROWS UNBOUNDED PRECEDING) AS up_run_id,
+               sum(1 - down) OVER (PARTITION BY yahoo_symbol ORDER BY trade_date
+                                   ROWS UNBOUNDED PRECEDING) AS dn_run_id
+        FROM all_flagged
+    ),
+    all_streaked AS (
+        SELECT *,
+               row_number() OVER (PARTITION BY yahoo_symbol, up_run_id ORDER BY trade_date) - 1
+                   AS up_streak,
+               row_number() OVER (PARTITION BY yahoo_symbol, dn_run_id ORDER BY trade_date) - 1
+                   AS dn_streak,
+               first_value(close) OVER (PARTITION BY yahoo_symbol, up_run_id ORDER BY trade_date)
+                   AS up_base_close
+        FROM all_runs
+    ),
+    hist AS (
+        SELECT a.yahoo_symbol, a.trade_date, a.close, a.day_pct, a.up_streak, a.dn_streak,
+               ro.symbol, ro.company, ro.sector,
+               100.0 * (a.close / nullif(a.close_5_ago, 0) - 1) AS r5,
+               100.0 * a.close / nullif(a.hi20, 0) AS pct_of_hi20,
+               100.0 * (a.close / nullif(a.up_base_close, 0) - 1) AS up_gain_pct,
+               lead(a.day_pct) OVER (PARTITION BY a.yahoo_symbol ORDER BY a.trade_date) AS fwd1
+        FROM all_streaked a
+        JOIN roster ro ON ro.yahoo_symbol = a.yahoo_symbol
+        WHERE a.prev_close IS NOT NULL
+    ),
+    hist_mkt AS (
+        -- the market's own move: the equal-weighted average of every member that session
+        SELECT trade_date, avg(day_pct) AS mkt_today, avg(fwd1) AS mkt_fwd1,
+               100.0 * avg(CASE WHEN day_pct > 0 THEN 1 ELSE 0 END) AS breadth_pct
+        FROM hist GROUP BY trade_date
+    ),
+    h AS (
+        SELECT x.*, m.mkt_today, m.mkt_fwd1, m.breadth_pct, x.fwd1 - m.mkt_fwd1 AS excess
+        FROM hist x JOIN hist_mkt m ON m.trade_date = x.trade_date
+    ),
+    halves AS (
+        SELECT min(trade_date) + ((max(trade_date) - min(trade_date)) / 2)::INTEGER AS mid
+        FROM h WHERE fwd1 IS NOT NULL
+    ),
+    h_bounce AS (
+        SELECT *, row_number() OVER (PARTITION BY trade_date ORDER BY r5) AS bounce_rank
+        FROM h WHERE dn_streak >= 3 AND r5 IS NOT NULL
+    ),
+    h_momentum AS (
+        SELECT *, row_number() OVER (PARTITION BY trade_date ORDER BY up_gain_pct DESC) AS mom_rank
+        FROM h WHERE up_streak >= 3
+    )
+"""
+
+#: **The evidence page's core table.** For every streak length in both directions, what happened
+#: the next session over the whole history — hit rate, average return, and average return *minus
+#: the market's move that day*. The excess column is the one that matters: a rule with a good
+#: return and no excess is a bet on the market, not a stock pick.
+STREAK_EVIDENCE = f"""
+WITH {HISTORY}
+SELECT 'Rose N days running' AS direction, up_streak AS streak_length,
+       count(*) AS observations,
+       round(100.0 * avg(CASE WHEN fwd1 > 0 THEN 1 ELSE 0 END), 1) AS rose_next_pct,
+       round(avg(fwd1), 3) AS avg_next_pct,
+       round(avg(excess), 3) AS avg_excess_pct
+FROM h WHERE up_streak BETWEEN 1 AND 7 AND fwd1 IS NOT NULL
+GROUP BY up_streak
+UNION ALL
+SELECT 'Fell N days running', dn_streak, count(*),
+       round(100.0 * avg(CASE WHEN fwd1 > 0 THEN 1 ELSE 0 END), 1),
+       round(avg(fwd1), 3), round(avg(excess), 3)
+FROM h WHERE dn_streak BETWEEN 1 AND 7 AND fwd1 IS NOT NULL
+GROUP BY dn_streak
+ORDER BY direction, streak_length
+"""
+
+#: The two rules traded side by side, split into the first half of the history and the second.
+#: **The split is the whole point.** A rule chosen by looking at data will always look good on
+#: that data; the only honest question is whether it still works on the half it never saw.
+RULE_COMPARISON = f"""
+WITH {HISTORY},
+    labelled AS (
+        SELECT 'Buy the fallers (down 3+, biggest 5-day fall)' AS rule, trade_date, fwd1, excess
+        FROM h_bounce WHERE bounce_rank <= 5 AND fwd1 IS NOT NULL
+        UNION ALL
+        SELECT 'Buy the risers (up 3+, biggest streak gain)', trade_date, fwd1, excess
+        FROM h_momentum WHERE mom_rank <= 5 AND fwd1 IS NOT NULL
+        UNION ALL
+        SELECT 'Buy any S&P 500 stock (the baseline)', trade_date, fwd1, 0.0
+        FROM h WHERE fwd1 IS NOT NULL
+    )
+SELECT rule,
+       CASE WHEN trade_date < (SELECT mid FROM halves) THEN '1 first half'
+            ELSE '2 second half (held out)' END AS period,
+       count(*) AS picks,
+       round(100.0 * avg(CASE WHEN fwd1 > 0 THEN 1 ELSE 0 END), 1) AS rose_next_pct,
+       round(avg(fwd1), 3) AS avg_next_pct,
+       round(avg(excess), 3) AS avg_excess_pct
+FROM labelled
+GROUP BY rule, period
+ORDER BY rule, period
+"""
+
+#: What the market itself did the session after a fall of a given size. The single most consistent
+#: effect in the data, and it is about the market, not about any stock.
+MARKET_BOUNCE = f"""
+WITH {HISTORY},
+    m AS (SELECT DISTINCT trade_date, mkt_today, mkt_fwd1 FROM h WHERE mkt_fwd1 IS NOT NULL)
+SELECT CASE WHEN mkt_today <= -1.0 THEN 'Market fell more than 1%'
+            WHEN mkt_today <= -0.3 THEN 'Market fell 0.3% to 1%'
+            WHEN mkt_today <   0.3 THEN 'Market roughly flat'
+            ELSE 'Market rose more than 0.3%' END AS market_day,
+       CASE WHEN mkt_today <= -1.0 THEN 1 WHEN mkt_today <= -0.3 THEN 2
+            WHEN mkt_today < 0.3 THEN 3 ELSE 4 END AS sort_order,
+       count(*) AS sessions,
+       round(avg(mkt_fwd1), 3) AS avg_next_pct,
+       round(100.0 * avg(CASE WHEN mkt_fwd1 > 0 THEN 1 ELSE 0 END), 1) AS next_up_pct
+FROM m GROUP BY market_day, sort_order ORDER BY sort_order
+"""
+
+#: Today's bounce candidates: the stocks the validated rule points at, as of the latest close.
+BOUNCE_PICKS = f"""
+WITH {HISTORY}
+SELECT r.bounce_rank, r.symbol, r.company, r.sector,
+       r.dn_streak AS down_days,
+       round(r.day_pct, 2) AS latest_day_pct,
+       round(r.r5, 2) AS five_day_pct,
+       round(r.pct_of_hi20, 1) AS pct_of_20d_high,
+       round(r.close, 2) AS latest_close,
+       round(r.mkt_today, 2) AS market_today_pct,
+       round(r.breadth_pct, 1) AS breadth_pct
+FROM h_bounce r
+JOIN scan ON r.trade_date = scan.scan_date
+WHERE r.bounce_rank <= 15
+ORDER BY r.bounce_rank
+"""
+
+#: The one row the evidence page's tiles read: the honest edge, and today's market setting.
+BOUNCE_SUMMARY = f"""
+WITH {HISTORY},
+    bounce AS (SELECT trade_date, fwd1, excess FROM h_bounce
+               WHERE bounce_rank <= 5 AND fwd1 IS NOT NULL),
+    per_day AS (SELECT trade_date, avg(excess) AS day_excess FROM bounce GROUP BY trade_date)
+SELECT
+    (SELECT count(DISTINCT trade_date) FROM h WHERE fwd1 IS NOT NULL) AS sessions_tested,
+    (SELECT round(avg(fwd1), 3) FROM bounce) AS bounce_avg_next_pct,
+    (SELECT round(avg(excess), 3) FROM bounce) AS bounce_avg_excess_pct,
+    (SELECT round(avg(excess), 3) FROM bounce WHERE trade_date >= (SELECT mid FROM halves))
+        AS bounce_excess_held_out,
+    (SELECT round(avg(day_excess) / nullif(stddev_samp(day_excess) / sqrt(count(*)), 0), 2)
+     FROM per_day) AS t_statistic,
+    (SELECT round(avg(mkt_today), 2) FROM h JOIN scan ON h.trade_date = scan.scan_date)
+        AS market_today_pct,
+    (SELECT round(avg(breadth_pct), 1) FROM h JOIN scan ON h.trade_date = scan.scan_date)
+        AS breadth_today_pct,
+    (SELECT symbol FROM h_bounce JOIN scan ON h_bounce.trade_date = scan.scan_date
+     WHERE bounce_rank = 1) AS top_bounce_symbol,
+    (SELECT count(*) FROM h_bounce JOIN scan ON h_bounce.trade_date = scan.scan_date)
+        AS candidates_today,
+    (SELECT round(avg(mkt_fwd1), 3) FROM h JOIN halves ON true
+     WHERE mkt_today <= -0.3 AND mkt_today > -1.0 AND mkt_fwd1 IS NOT NULL) AS after_mild_fall_pct
+"""
+
 OUTPUTS = (
     ("scan_overview", SCAN_OVERVIEW, "the headline numbers"),
     ("active_streaks", ACTIVE_STREAKS, "the leaderboard"),
@@ -399,6 +661,11 @@ OUTPUTS = (
     ("pick_scores", PICK_SCORES, "today's picks, scored"),
     ("pick_backtest", PICK_BACKTEST, "the pick rule replayed on past days"),
     ("pick_backtest_summary", PICK_BACKTEST_SUMMARY, "the back-test's baselines"),
+    ("streak_evidence", STREAK_EVIDENCE, "what each streak length did next, both directions"),
+    ("rule_comparison", RULE_COMPARISON, "the two rules against the baseline, split in half"),
+    ("market_bounce", MARKET_BOUNCE, "what the market did after a fall"),
+    ("bounce_picks", BOUNCE_PICKS, "today's bounce candidates"),
+    ("bounce_summary", BOUNCE_SUMMARY, "the honest edge, in one row"),
 )
 
 

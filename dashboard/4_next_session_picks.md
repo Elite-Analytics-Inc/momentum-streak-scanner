@@ -42,7 +42,13 @@ ORDER BY pick_date
 ```
 
 A rule for choosing which streaks to back for the next session — and, just as important, a
-replay of that rule on every past day in the window so you can see whether it beat a coin flip.
+replay of that rule on past days so you can see whether it beat a coin flip.
+
+**This rule does not work.** Tested over two years on the next page, buying the stocks with the
+strongest winning runs lost to the index in both halves of the sample. The page is kept because
+the ranking it produces is what the analysis was asked for, and because a rule shown to fail is
+more useful than one quietly deleted. Read **What Actually Predicts** before acting on anything
+here.
 
 {% notes label="How the picks are chosen — and how to judge them" %}
 Every streaking stock is scored out of 100 on four signs that its run still had force at the

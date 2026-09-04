@@ -40,9 +40,11 @@ ROOT = Path(__file__).resolve().parent.parent
 LAKE = ROOT / "data" / "lake" / "markets"
 CACHE = ROOT / ".loader_cache"                    # gitignored: it never leaves the laptop
 
-#: How much history to pull. The spec asks for one month; three gives the streak logic room —
-#: a streak longer than one month of sessions is rare but must not be cut short by the window.
-PERIOD = "3mo"
+#: How much history to pull. The streak logic itself needs only weeks, but the analysis also
+#: **back-tests its own pick rule**, and three months of sessions was far too short to tell a real
+#: edge from noise — the first version of the pick page was judged on forty days and said nothing
+#: trustworthy. Two years gives ~500 sessions and a held-out half.
+PERIOD = "2y"
 #: Batch shape. Twenty-five symbols per request group, two seconds between groups, is well under
 #: Yahoo's tolerance and still finishes the whole index in a few minutes.
 BATCH_SIZE = 25

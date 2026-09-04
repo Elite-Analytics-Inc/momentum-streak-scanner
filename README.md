@@ -30,15 +30,22 @@ as of the newest close in the data.
   streak, so you can tell a market-wide lift from stock-specific momentum; plus a sector table.
 - **Next-Session Picks** — every streaking stock scored on four signs (a strong last day, its
   sector rising with it, a steady climb rather than a one-day jump, and closing near its high),
-  the top 5, 10, 15 or 20 named as picks, and a back-test that replays the rule on past days and
-  shows its hit rate next to the whole index's. On the first run the picks did worse than random,
-  and the page shows that plainly.
+  the top 5, 10, 15 or 20 named as picks. The page is kept, with a warning at the top: the rule
+  was tried live and lost.
+- **What Actually Predicts** — the evidence, over two years of trading days split in half so no
+  rule is judged on the data that produced it. Stocks on the longest winning runs slightly
+  underperform the next day. Stocks that have been falling bounce a little. The effect is small
+  and not statistically strong. The clearest pattern is about the market as a whole: after a fall
+  of more than 1%, the next day has been up about two thirds of the time.
 
 ## Data
 
-Two tables: the current S&P 500 member list and daily closing prices. On the laptop these are
-loaded once from Wikipedia and Yahoo Finance by a small loader script, gently, in batches. The same
-feeds will be loaded into the platform's lake under the same names.
+Two tables: the current S&P 500 member list and daily closing prices, two years of them. On the
+laptop these are loaded once from Wikipedia and Yahoo Finance by a small loader script, gently, in
+batches. The same feeds will be loaded into the platform's lake under the same names.
+
+Two years matters. The first version of this analysis held three months, judged its own prediction
+rule on forty trading days, and reported an edge that did not exist.
 
 ## Settings
 
