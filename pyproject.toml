@@ -1,0 +1,32 @@
+# The draft's environment, resolved by uv: the concierge runs `uv sync` at the tools gate and
+# `uv run tarn-draft run` to execute the analysis and open its dashboard. The analyst never
+# reads this file.
+#
+# `tarn-draft` is the platform SDK *and* the dashboard previewer — the same package, the same
+# renderer, the same release the platform runs, which is what makes the preview honest and
+# promotion a package swap rather than a rewrite. It came inside this starter package, from the
+# platform itself, so the version here is the version that will run the promoted job. It carries
+# the design system and the widget library the dashboard renders with, and it is private: the
+# `.gitignore` keeps it out of the repository, and nothing else in this folder needs it.
+[project]
+name = "tarn-draft-analysis"
+version = "0.0.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "tarn-draft",
+    "duckdb>=1.1",
+]
+
+[tool.uv.sources]
+tarn-draft = { path = "tarn_draft-0.8.17-py3-none-any.whl" }
+
+[dependency-groups]
+loader = [
+    "lxml>=6.1.3",
+    "requests>=2.34.2",
+    "yfinance>=1.7.0",
+]
+
+# An analysis is a plain repo, not a package to build.
+[tool.uv]
+package = false

@@ -1,0 +1,47 @@
+# Builds the analysis into a package on every push to main, and prints the two lines the
+# analyst acts on. The image is named after the repository, so nothing here is edited.
+name: job image
+on: { push: { branches: [main] } }
+permissions: { contents: read, packages: write }
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Registries accept lowercase names only, and a GitHub organisation may be "Elite-Analytics-Inc".
+      - run: echo "IMAGE=$(echo 'ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+      # Nothing to package yet (the starter kit alone) is not a failure. Say so and stop green.
+      - id: ready
+        run: |
+          if [ -f main.py ] && [ -f parameters.json ] && [ -d dashboard ]; then
+            echo "ready=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=no" >> "$GITHUB_OUTPUT"
+            echo "## Nothing to build yet" >> "$GITHUB_STEP_SUMMARY"
+            echo "This repository holds the starter kit only. The build runs when the analysis (main.py, parameters.json, dashboard/) is pushed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # The base image is public: no secret, nothing to configure.
+      - if: steps.ready.outputs.ready == 'yes'
+        run: docker build -t "$IMAGE:${{ github.sha }}" .
+      # Your own package is pushed with the repository's own token.
+      - if: steps.ready.outputs.ready == 'yes'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - if: steps.ready.outputs.ready == 'yes'
+        run: |
+          docker push "$IMAGE:${{ github.sha }}" | tee push.log
+          owner_kind=$([ "${{ github.event.repository.owner.type }}" = "Organization" ] && echo orgs || echo users)
+          SETTINGS="https://github.com/$owner_kind/${{ github.repository_owner }}/packages/container/${{ github.event.repository.name }}/settings"
+          # The full reference, registry included: it names the package wherever the install's own
+          # images live, so it is the one form that works for every analyst.
+          REF="$IMAGE@$(grep -o 'sha256:[0-9a-f]*' push.log | tail -1)"
+          echo
+          echo "CHECK IT IS PUBLIC -> $SETTINGS"
+          echo "REGISTER THIS      -> $REF"
+          # The same two lines on the run's summary page, so they are the first thing seen.
+          {
+            echo "## Your package is built"
+            echo
+            echo "**Check the package is public** (it is, when the repository is): $SETTINGS"
+            echo
+            echo "**Register this in ByteCustodian:** \`$REF\`"
+          } >> "$GITHUB_STEP_SUMMARY"
